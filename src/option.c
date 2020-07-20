@@ -159,6 +159,7 @@ struct myoption {
 #define LOPT_SCRIPT_ARP    347
 #define LOPT_DHCPTTL       348
 #define LOPT_TFTP_MTU      349
+#define LOPT_NFSET         350
  
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -305,6 +306,7 @@ static const struct myoption opts[] =
     { "auth-sec-servers", 1, 0, LOPT_AUTHSFS },
     { "auth-peer", 1, 0, LOPT_AUTHPEER }, 
     { "ipset", 1, 0, LOPT_IPSET },
+	{ "nfset", 1, 0, LOPT_NFSET },
     { "synth-domain", 1, 0, LOPT_SYNTH },
     { "dnssec", 0, 0, LOPT_SEC_VALID },
     { "trust-anchor", 1, 0, LOPT_TRUST_ANCHOR },
@@ -476,6 +478,7 @@ static struct {
   { LOPT_AUTHSFS, ARG_DUP, "<NS>[,<NS>...]", gettext_noop("Secondary authoritative nameservers for forward domains"), NULL },
   { LOPT_AUTHPEER, ARG_DUP, "<ipaddr>[,<ipaddr>...]", gettext_noop("Peers which are allowed to do zone transfer"), NULL },
   { LOPT_IPSET, ARG_DUP, "/<domain>[/<domain>...]/<ipset>...", gettext_noop("Specify ipsets to which matching domains should be added"), NULL },
+  { LOPT_NFSET, ARG_DUP, "/<domain>[/<domain>...]/[ipv4 | ipv6] <nfset>...", gettext_noop("Specify nfsets to which matching domains should be added"), NULL },
   { LOPT_SYNTH, ARG_DUP, "<domain>,<range>,[<prefix>]", gettext_noop("Specify a domain and address range for synthesised names"), NULL },
   { LOPT_SEC_VALID, OPT_DNSSEC_VALID, NULL, gettext_noop("Activate DNSSEC validation"), NULL },
   { LOPT_TRUST_ANCHOR, ARG_DUP, "<domain>,[<class>],...", gettext_noop("Specify trust anchor key digest."), NULL },
@@ -645,6 +648,121 @@ static int atoi_check16(char *a, int *res)
 
   return 1;
 }
+
+#ifdef HAVE_NFSET
+static int nfset_list_add(struct nfset_list **l, const char *set) {
+  for (struct nfset_list *cur = *l; cur != NULL; cur = cur->next)
+    if (strcmp(cur->str, set) == 0) return 0;
+  struct nfset_list *new_node = DNTREE_MALLOC(sizeof(struct nfset_list));
+  if (new_node == NULL) return -1;
+  new_node->next = *l;
+  *l = new_node;
+  (*l)->str = dntree_string_alloc(set);
+  if ((*l)->str == NULL) return -1;
+  return 0;
+}
+
+static int nfset_list_merge(struct nfset_list **dst, const struct nfset_list *src) {
+  for (const struct nfset_list *cur = src; cur != NULL; cur = cur->next) {
+    int err = nfset_list_add(dst, cur->str);
+    if (err) return err;
+  }
+  return 0;
+}
+
+static void nfset_list_free(struct nfset_list **l) {
+  for (struct nfset_list *cur = *l;;) {
+    if (cur == NULL) break;
+    struct nfset_list *next = cur->next;
+    free(cur);
+    cur = next;
+  }
+  *l = NULL;
+}
+
+static int nfset_parse_option(struct nfsets *sets, char *arg) {
+  int err;
+  struct nfset_list *l = NULL;
+
+  char *lo = NULL;
+  ssize_t len = strlen(arg);
+  for (ssize_t i = len - 1; i >= 0; i--) {
+    if (arg[i] == '/') {
+      arg[i] = '\0';
+      lo = arg + i + 1;
+      break;
+    }
+  }
+  if (lo == NULL) return -1;
+  for (;;) {
+    size_t i;
+    for (i = 0; lo[i] != '\0'; i++) if (lo[i] == ',') break;
+    if (lo[i] == ',') {
+      if (i > 0) {
+        lo[i] = '\0';
+        err = nfset_list_add(&l, lo);
+        if (err) return err;
+      }
+      lo += i + 1;
+    } else {
+      if (i > 0) {
+        err = nfset_list_add(&l, lo);
+        if (err) return err;
+      }
+      break;
+    }
+  }
+
+  if (l == NULL) return 0;
+  if (arg[0] != '/') return -1;
+  lo = arg + 1;
+  for (;;) {
+    size_t i;
+    for (i = 0; lo[i] != '\0'; i++) if (lo[i] == '/') break;
+    if (lo[i] == '/') {
+      if (i > 0) {
+        lo[i] = '\0';
+        struct nfset_list **data =
+            (struct nfset_list **) dntree_get(&sets->root, lo);
+        if (data == NULL) dntree_set(&sets->root, lo, NULL);
+        data = (struct nfset_list **) dntree_get(&sets->root, lo);
+        err = nfset_list_merge(data, l);
+        if (err) return err;
+      }
+      lo += i + 1;
+    } else {
+      if (i > 0) {
+        struct nfset_list **data =
+            (struct nfset_list **) dntree_get(&sets->root, lo);
+        if (data == NULL) dntree_set(&sets->root, lo, NULL);
+        data = (struct nfset_list **) dntree_get(&sets->root, lo);
+        err = nfset_list_merge(data, l);
+        if (err) return err;
+      }
+      break;
+    }
+  }
+
+  nfset_list_free(&l);
+
+  return 0;
+}
+
+void nfset_display(struct dntree *root, size_t ident) {
+  if (root == NULL) return;
+  for (size_t i = 0; i < ident; i++) printf("\t");
+  if (root->label != NULL) printf("%s", root->label);
+  if (root->data != NULL) {
+    printf(" ->");
+    for (struct nfset_list *cur = root->data; cur != NULL; cur = cur->next) {
+      printf(" %s,", cur->str);
+    }
+  }
+  printf("\n");
+  for (size_t i = 0; i < root->children_size; i++)
+    nfset_display(&root->children[i], ident + 1);
+}
+#endif
 
 #ifdef HAVE_DNSSEC
 static int atoi_check8(char *a, int *res)
@@ -2563,7 +2681,27 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	 break;
       }
 #endif
-      
+
+    case LOPT_NFSET: /* --nfset */
+#ifndef HAVE_NFSET
+      ret_err(_("recompile with HAVE_NFSET defined to enable nfset directives"));
+      break;
+#else
+	{
+	int err;
+    if (daemon->nfsets == NULL) {
+	  daemon->nfsets = opt_malloc(sizeof(struct nfsets));
+	  dntree_init(&daemon->nfsets->root);
+	}
+	err = nfset_parse_option(daemon->nfsets, arg);
+	if (err) {
+	  ret_err(gen_err);
+	  break;
+	}
+	break;
+	}
+#endif
+
     case 'c':  /* --cache-size */
       {
 	int size;

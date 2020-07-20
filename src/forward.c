@@ -559,6 +559,7 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
 {
   unsigned char *pheader, *sizep;
   char **sets = 0;
+  struct nfset_list *nfsets = NULL;
   int munged = 0, is_sign;
   size_t plen; 
 
@@ -586,6 +587,26 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
 	    }
 	}
     }
+#endif
+
+#ifdef HAVE_NFSET
+	if (daemon->nfsets && extract_request(header, n, daemon->namebuff, NULL)) {
+ 		int err;
+		char label[DNTREE_LABEL_MAX_LEN + 1];
+		struct dntree *root = &daemon->nfsets->root;
+		nfsets = root->data;
+		if (strcmp(daemon->namebuff, "#") != 0) {
+			struct dntree_dn_iter iter;
+			dntree_dn_iter_init(&iter, daemon->namebuff);
+			while (dntree_dn_iter_has_next(&iter)) {
+				err = dntree_dn_iter_next(&iter, label);
+				if (err) break;
+				err = dntree_walk(&root, label);
+				if (err) break;
+				if (root->data != NULL) nfsets = root->data;
+			}
+		}
+	}
 #endif
   
   if ((pheader = find_pseudoheader(header, n, &plen, &sizep, &is_sign, NULL)))
@@ -676,7 +697,7 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
 	  cache_secure = 0;
 	}
       
-      if (extract_addresses(header, n, daemon->namebuff, now, sets, is_sign, check_rebind, no_cache, cache_secure, &doctored))
+      if (extract_addresses(header, n, daemon->namebuff, now, sets, is_sign, check_rebind, no_cache, cache_secure, &doctored, nfsets))
 	{
 	  my_syslog(LOG_WARNING, _("possible DNS-rebind attack detected: %s"), daemon->namebuff);
 	  munged = 1;

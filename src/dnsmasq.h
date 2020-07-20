@@ -444,6 +444,7 @@ struct crec {
 #define F_NO_RR     (1u<<25)
 #define F_IPSET     (1u<<26)
 #define F_NOEXTRA   (1u<<27)
+#define F_NFSET     (1u<<28)
 
 /* Values of uid in crecs with F_CONFIG bit set. */
 #define SRC_INTERFACE 0
@@ -518,6 +519,19 @@ struct ipsets {
   char *domain;
   struct ipsets *next;
 };
+
+#ifdef HAVE_NFSET
+#include "dntree.h"
+
+struct nfset_list {
+  struct nfset_list *next;
+  const char *str;
+};
+
+struct nfsets {
+  struct dntree root;
+};
+#endif
 
 struct irec {
   union mysockaddr addr;
@@ -955,6 +969,9 @@ extern struct daemon {
   struct bogus_addr *bogus_addr, *ignore_addr;
   struct server *servers;
   struct ipsets *ipsets;
+#ifdef HAVE_NFSET
+  struct nfsets *nfsets;
+#endif
   int log_fac; /* log facility */
   char *log_file; /* optional log file */
   int max_logs;  /* queue limit */
@@ -1123,7 +1140,7 @@ size_t setup_reply(struct dns_header *header, size_t  qlen,
 		   unsigned long local_ttl);
 int extract_addresses(struct dns_header *header, size_t qlen, char *namebuff, 
 		      time_t now, char **ipsets, int is_sign, int checkrebind,
-		      int no_cache, int secure, int *doctored);
+		      int no_cache, int secure, int *doctored, struct nfset_list *nfsets);
 size_t answer_request(struct dns_header *header, char *limit, size_t qlen,  
 		      struct in_addr local_addr, struct in_addr local_netmask, 
 		      time_t now, int ad_reqd, int do_bit, int have_pseudoheader);
@@ -1379,6 +1396,14 @@ void emit_dbus_signal(int action, struct dhcp_lease *lease, char *hostname);
 #ifdef HAVE_IPSET
 void ipset_init(void);
 int add_to_ipset(const char *setname, const struct all_addr *ipaddr, int flags, int remove);
+#endif
+
+/* nfset.c */
+#ifdef HAVE_NFSET
+void nfset_init(void);
+int add_to_nfset(const char *setname, const struct all_addr *ipaddr, int flags);
+
+void nfset_display(struct dntree *root, size_t ident);
 #endif
 
 /* helper.c */
