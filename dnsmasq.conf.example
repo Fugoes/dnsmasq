@@ -85,6 +85,16 @@
 # subdomains to the vpn and search ipsets:
 #ipset=/yahoo.com/google.com/vpn,search
 
+# Add the IPs of all A queries to yahoo.com, google.com, and their
+# subdomains to the nftables ipv4_addr set with path of
+# 'inet inet_table myset'. Add the IPs of all AAAA queries to
+# yahoo.com, google.com, and their subdomains to the nftables
+# ipv6_addr set with path of 'inet inet_table myset6'.
+# They are equivalent to:
+# > nft add element inet inet_table myset { <some ipv4 address> }
+# > nft add element inet inet_table myset6 { <some ipv6 address> }
+#nfset=/yahoo.com/google.com/ipv4 inet inet_table myset,ipv6 inet inet_table myset6
+
 # You can control how dnsmasq talks to a server: this forces
 # queries to 10.1.2.3 to be routed via eth1
 # server=10.1.2.3@eth1
