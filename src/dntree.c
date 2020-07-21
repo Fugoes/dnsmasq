@@ -2,26 +2,11 @@
 
 #include <string.h>
 
-struct string_pool {
-  struct string_pool *next;
-  const char *str;
-};
-
-static struct string_pool *spool;
-
 const char *dntree_string_alloc(const char *str) {
-  for (struct string_pool *cursor = spool;
-       cursor != NULL; cursor = cursor->next) {
-    if (strcmp(cursor->str, str) == 0) return cursor->str;
-  }
-  struct string_pool *new_head = DNTREE_MALLOC(sizeof(struct string_pool));
-  if (new_head == NULL) return NULL;
-  new_head->str = malloc(strlen(str) + 1);
-  if (new_head->str == NULL) return NULL;
-  strcpy((char *) new_head->str, str);
-  new_head->next = spool;
-  spool = new_head;
-  return spool->str;
+  char *new_str = DNTREE_MALLOC(strlen(str) + 1);
+  if (new_str == NULL) return NULL;
+  strcpy(new_str, str);
+  return new_str;
 }
 
 void dntree_dn_iter_init(struct dntree_dn_iter *iter, const char *domain) {
@@ -63,110 +48,104 @@ int dntree_dn_iter_next(struct dntree_dn_iter *iter, char *label) {
   }
 }
 
+static inline uint32_t jenkins_one_at_a_time_hash(const uint8_t *key) {
+  uint32_t hash = 0;
+  for (; *key != '\0'; key++) {
+    hash += *key;
+    hash += hash << 10u;
+    hash ^= hash >> 6u;
+  }
+  hash += hash << 3u;
+  hash ^= hash >> 11u;
+  hash += hash << 15u;
+  return hash;
+}
+
+static uint32_t hash(const char *key) {
+  return jenkins_one_at_a_time_hash((const uint8_t *) key);
+}
+
+static void dntree_ht_init(struct dntree_ht *ht) {
+  ht->size = 0;
+  ht->capacity = DNTREE_HT_INIT_CAPACITY;
+  ht->arr = DNTREE_MALLOC(ht->capacity * sizeof(struct dntree *));
+  memset(ht->arr, 0, ht->capacity * sizeof(struct dntree *));
+}
+
+static uint32_t dntree_ht_search(struct dntree_ht *ht, const char *key) {
+  uint32_t idx = hash(key) % ht->capacity;
+  for (uint32_t i = 0; i < ht->capacity; i++) {
+    uint32_t k = (idx + i) % ht->capacity;
+    if (ht->arr[k] == NULL || strcmp(key, ht->arr[k]->label) == 0)
+      return k;
+  }
+  return UINT32_MAX;
+}
+
+static int dntree_ht_enlarge(struct dntree_ht *ht) {
+  if (ht->capacity >= UINT32_MAX / 2) return -1;
+
+  uint32_t old_capacity = ht->capacity;
+  struct dntree **old_arr = ht->arr;
+
+  ht->capacity *= 2;
+  ht->arr = DNTREE_MALLOC(ht->capacity * sizeof(struct dntree *));
+  memset(ht->arr, 0, ht->capacity * sizeof(struct dntree *));
+
+  for (uint32_t i = 0; i < old_capacity; i++) {
+    struct dntree *elem = old_arr[i];
+    if (elem != NULL) {
+      uint32_t idx = dntree_ht_search(ht, elem->label);
+      ht->arr[idx] = elem;
+    }
+  }
+
+  free(old_arr);
+
+  return 0;
+}
+
 void dntree_init(struct dntree *root) {
   root->label = NULL;
   root->data = NULL;
-
-  root->children = NULL;
-  root->children_size = 0;
-  root->children_capacity = 0;
+  dntree_ht_init(&root->children);
 }
 
-static int add_or_get_child(struct dntree **tree, const char *label) {
-  size_t idx = (*tree)->children_size;
-  for (size_t i = 0; i < (*tree)->children_size; i++) {
-    struct dntree *cur = &(*tree)->children[i];
-    int cmp = strcmp(label, cur->label);
-    if (cmp == 0) {
-      *tree = cur;
-      return 0;
-    } else if (cmp < 0) {
-      idx = i;
-      break;
-    }
-  }
-
-  if ((*tree)->children_size == (*tree)->children_capacity) {
-    if ((*tree)->children_capacity == 0) {
-      (*tree)->children_capacity = 1;
-      (*tree)->children = DNTREE_MALLOC(sizeof(struct dntree));
-      if ((*tree)->children == NULL) return -1;
-    } else {
-      (*tree)->children_capacity *= 2;
-      struct dntree *new_children =
-          DNTREE_MALLOC(sizeof(struct dntree) * (*tree)->children_capacity);
-      if (new_children == NULL) return -1;
-      memcpy(new_children, (*tree)->children,
-             sizeof(struct dntree) * (*tree)->children_size);
-      free((*tree)->children);
-      (*tree)->children = new_children;
-    }
-  }
-
-  if (idx < (*tree)->children_size)
-    memmove((*tree)->children + idx + 1, (*tree)->children + idx,
-            sizeof(struct dntree) * ((*tree)->children_size - idx));
-  (*tree)->children_size++;
-  (*tree) = &(*tree)->children[idx];
-  dntree_init(*tree);
-  (*tree)->label = dntree_string_alloc(label);
-  if ((*tree)->label == NULL) return -1;
-
-  return 0;
-}
-
-int dntree_set(struct dntree *root, const char *domain, void *data) {
+int dntree_get_or_create(struct dntree *root, const char *domain,
+                         struct dntree **res) {
   int err;
 
   if (strcmp(domain, "#") != 0) {
-    char label[DNTREE_LABEL_MAX_LEN + 1];
     struct dntree_dn_iter iter;
+    char label[DNTREE_LABEL_MAX_LEN + 1];
+
     dntree_dn_iter_init(&iter, domain);
     while (dntree_dn_iter_has_next(&iter)) {
       err = dntree_dn_iter_next(&iter, label);
       if (err) return err;
-      err = add_or_get_child(&root, label);
-      if (err) return err;
+      uint32_t idx = dntree_ht_search(&root->children, label);
+      if (root->children.arr[idx] == NULL) {
+        root->children.size++;
+        if (root->children.size * 2 > root->children.capacity) {
+          err = dntree_ht_enlarge(&root->children);
+          if (err) return err;
+          idx = dntree_ht_search(&root->children, label);
+        }
+        root->children.arr[idx] = DNTREE_MALLOC(sizeof(struct dntree));
+        dntree_init(root->children.arr[idx]);
+        root->children.arr[idx]->label = dntree_string_alloc(label);
+      }
+      root = root->children.arr[idx];
     }
   }
-  root->data = data;
+  *res = root;
 
   return 0;
-}
-
-void **dntree_get(struct dntree *root, const char *domain) {
-  int err;
-
-  if (strcmp(domain, "#") != 0) {
-    char label[DNTREE_LABEL_MAX_LEN + 1];
-    struct dntree_dn_iter iter;
-    dntree_dn_iter_init(&iter, domain);
-    while (dntree_dn_iter_has_next(&iter)) {
-      err = dntree_dn_iter_next(&iter, label);
-      if (err) return NULL;
-      err = dntree_walk(&root, label);
-      if (err) return NULL;
-    }
-  }
-
-  return &root->data;
 }
 
 int dntree_walk(struct dntree **root, const char *label) {
-  if (*root == NULL || (*root)->children_size == 0) return -1;
-
-  ssize_t lo = 0, hi = (*root)->children_size - 1, mi;
-  while (lo <= hi) {
-    mi = lo + (hi - lo) / 2;
-    struct dntree *p = &(*root)->children[mi];
-    int cmp = strcmp(label, p->label);
-    if (cmp == 0) {
-      *root = p;
-      return 0;
-    } else {
-      if (cmp < 0) hi = mi - 1; else lo = mi + 1;
-    }
-  }
-
-  return -1;
+  uint32_t idx = dntree_ht_search(&(*root)->children, label);
+  if ((*root)->children.arr[idx] == NULL) return -1;
+  *root = (*root)->children.arr[idx];
+  return 0;
 }

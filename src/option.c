@@ -650,27 +650,21 @@ static int atoi_check16(char *a, int *res)
 }
 
 #ifdef HAVE_NFSET
-static int nfset_list_add(struct nfset_list **l, const char *set) {
+void nfset_list_add(struct nfset_list **l, const char *set) {
   for (struct nfset_list *cur = *l; cur != NULL; cur = cur->next)
-    if (strcmp(cur->str, set) == 0) return 0;
+    if (strcmp(cur->str, set) == 0) return;
   struct nfset_list *new_node = DNTREE_MALLOC(sizeof(struct nfset_list));
-  if (new_node == NULL) return -1;
   new_node->next = *l;
   *l = new_node;
   (*l)->str = dntree_string_alloc(set);
-  if ((*l)->str == NULL) return -1;
-  return 0;
 }
 
-static int nfset_list_merge(struct nfset_list **dst, const struct nfset_list *src) {
-  for (const struct nfset_list *cur = src; cur != NULL; cur = cur->next) {
-    int err = nfset_list_add(dst, cur->str);
-    if (err) return err;
-  }
-  return 0;
+void nfset_list_merge(struct nfset_list **dst, const struct nfset_list *src) {
+  for (const struct nfset_list *cur = src; cur != NULL; cur = cur->next)
+    nfset_list_add(dst, cur->str);
 }
 
-static void nfset_list_free(struct nfset_list **l) {
+void nfset_list_free(struct nfset_list **l) {
   for (struct nfset_list *cur = *l;;) {
     if (cur == NULL) break;
     struct nfset_list *next = cur->next;
@@ -680,7 +674,7 @@ static void nfset_list_free(struct nfset_list **l) {
   *l = NULL;
 }
 
-static int nfset_parse_option(struct nfsets *sets, char *arg) {
+int nfset_parse_option(struct nfsets *sets, char *arg) {
   int err;
   struct nfset_list *l = NULL;
 
@@ -697,20 +691,11 @@ static int nfset_parse_option(struct nfsets *sets, char *arg) {
   for (;;) {
     size_t i;
     for (i = 0; lo[i] != '\0'; i++) if (lo[i] == ',') break;
-    if (lo[i] == ',') {
-      if (i > 0) {
-        lo[i] = '\0';
-        err = nfset_list_add(&l, lo);
-        if (err) return err;
-      }
-      lo += i + 1;
-    } else {
-      if (i > 0) {
-        err = nfset_list_add(&l, lo);
-        if (err) return err;
-      }
-      break;
-    }
+    char c = lo[i];
+    lo[i] = '\0';
+    if (i > 0) nfset_list_add(&l, lo);
+    if (c == '\0') break;
+    lo += i + 1;
   }
 
   if (l == NULL) return 0;
@@ -719,48 +704,21 @@ static int nfset_parse_option(struct nfsets *sets, char *arg) {
   for (;;) {
     size_t i;
     for (i = 0; lo[i] != '\0'; i++) if (lo[i] == '/') break;
-    if (lo[i] == '/') {
-      if (i > 0) {
-        lo[i] = '\0';
-        struct nfset_list **data =
-            (struct nfset_list **) dntree_get(&sets->root, lo);
-        if (data == NULL) dntree_set(&sets->root, lo, NULL);
-        data = (struct nfset_list **) dntree_get(&sets->root, lo);
-        err = nfset_list_merge(data, l);
-        if (err) return err;
-      }
-      lo += i + 1;
-    } else {
-      if (i > 0) {
-        struct nfset_list **data =
-            (struct nfset_list **) dntree_get(&sets->root, lo);
-        if (data == NULL) dntree_set(&sets->root, lo, NULL);
-        data = (struct nfset_list **) dntree_get(&sets->root, lo);
-        err = nfset_list_merge(data, l);
-        if (err) return err;
-      }
-      break;
+    char c = lo[i];
+    lo[i] = '\0';
+    if (i > 0) {
+      struct dntree *x;
+      err = dntree_get_or_create(&sets->root, lo, &x);
+      if (err) return err;
+      nfset_list_merge((struct nfset_list **) &x->data, l);
     }
+    if (c == '\0') break;
+	lo += i + 1;
   }
 
   nfset_list_free(&l);
 
   return 0;
-}
-
-void nfset_display(struct dntree *root, size_t ident) {
-  if (root == NULL) return;
-  for (size_t i = 0; i < ident; i++) printf("\t");
-  if (root->label != NULL) printf("%s", root->label);
-  if (root->data != NULL) {
-    printf(" ->");
-    for (struct nfset_list *cur = root->data; cur != NULL; cur = cur->next) {
-      printf(" %s,", cur->str);
-    }
-  }
-  printf("\n");
-  for (size_t i = 0; i < root->children_size; i++)
-    nfset_display(&root->children[i], ident + 1);
 }
 #endif
 
@@ -2689,7 +2647,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 #else
 	{
 	int err;
-    if (daemon->nfsets == NULL) {
+	if (daemon->nfsets == NULL) {
 	  daemon->nfsets = opt_malloc(sizeof(struct nfsets));
 	  dntree_init(&daemon->nfsets->root);
 	}

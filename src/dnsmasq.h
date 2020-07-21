@@ -1402,8 +1402,6 @@ int add_to_ipset(const char *setname, const struct all_addr *ipaddr, int flags, 
 #ifdef HAVE_NFSET
 void nfset_init(void);
 int add_to_nfset(const char *setname, const struct all_addr *ipaddr, int flags);
-
-void nfset_display(struct dntree *root, size_t ident);
 #endif
 
 /* helper.c */

@@ -42,7 +42,6 @@ static int start_with(const char *s, const char *prefix) {
 }
 
 void nfset_init() {
-  if (daemon->nfsets != NULL) nfset_display(&daemon->nfsets->root, 0);
   ctx = nft_ctx_new(NFT_CTX_DEFAULT);
   if (ctx == NULL) exit(EXIT_FAILURE);
 }
